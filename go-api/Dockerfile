@@ -1,1 +1,1 @@
-# This is an empty Dockerfile placeholder
+FROM golang:1.20-alpine
