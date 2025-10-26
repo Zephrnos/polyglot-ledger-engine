@@ -40,3 +40,4 @@ Goal: Make the system highly available and scalable.
 
 - [ ] Increase replica counts
 - [ ] Setup PostgreSQL Replication
+- [ ] Configure KEDA auto scaling
