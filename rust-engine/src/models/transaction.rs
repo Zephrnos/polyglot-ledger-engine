@@ -12,7 +12,7 @@ pub struct Transaction {
     value: Decimal
 }
 
-pub impl Transaction {
+impl Transaction {
 
     pub fn new(id: Uuid, date: DateTime<Utc>, source: AccountId, target: AccountId, value: Decimal) -> Self {
         Transaction {
@@ -36,7 +36,7 @@ pub impl Transaction {
         self.source
     }
 
-    pub fn target(&self) -> Account {
+    pub fn target(&self) -> AccountId {
         self.target
     }
 
