@@ -1,6 +1,6 @@
 use crate::models::transaction::Transaction;
 use rust_decimal::Decimal;
-use sqlx::{PgPool};
+use sqlx::{PgPool, Postgres}; // Added Postgres for type definition
 use tokio::join;
 
 // --- [1-4] Your functions (No changes needed here) ---
@@ -39,24 +39,38 @@ pub async fn verify(pool: &PgPool, transaction: &Transaction) -> Result<(), Stri
     }
 }
 
-async fn push_transaction(pool: &PgPool, transaction: &Transaction) -> Result<(), sqlx::Error> {
+// CHANGED: Now accepts a mutable reference to a Transaction instead of the Pool
+async fn push_transaction(tx: &mut sqlx::Transaction<'_, Postgres>, transaction: &Transaction) -> Result<(), sqlx::Error> {
+    // We use `&mut **tx` to access the underlying executor
     sqlx::query("UPDATE accounts SET balance = balance - $1 WHERE id = $2")
         .bind(transaction.value())
         .bind(transaction.source())
-        .execute(pool)
+        .execute(&mut **tx) 
         .await?;
 
     sqlx::query("UPDATE accounts SET balance = balance + $1 WHERE id = $2")
         .bind(transaction.value())
         .bind(transaction.target())
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
+        
     Ok(())
 }
 
 pub async fn transact(pool: &PgPool, transaction: Transaction) -> Result<(), String> {
+    // 1. Verify first (Read Phase)
     verify(pool, &transaction).await?;
-    push_transaction(pool, &transaction).await.map_err(|e| e.to_string())?;
+
+    // 2. Start the Transaction (matches "Commit Transaction" start in diagram)
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
+    // 3. Attempt Updates
+    // If this function fails, the transaction `tx` is dropped and automatically rolls back.
+    push_transaction(&mut tx, &transaction).await.map_err(|e| e.to_string())?;
+
+    // 4. Commit (matches "Transaction Commit Success" in diagram)
+    tx.commit().await.map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -70,7 +84,6 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    // Helper to setup the schema for the test database
     async fn setup_schema(pool: &PgPool) {
         sqlx::query("CREATE TABLE IF NOT EXISTS accounts (id INT PRIMARY KEY, balance DECIMAL)")
             .execute(pool)
@@ -78,10 +91,8 @@ mod tests {
             .expect("Failed to create schema");
     }
 
-    // Replaces test_verify_insufficient_funds_mocked
     #[sqlx::test]
     async fn test_verify_insufficient_funds(pool: PgPool) {
-        // 1. SETUP (Real DB interactions)
         setup_schema(&pool).await;
         
         sqlx::query("INSERT INTO accounts (id, balance) VALUES ($1, $2), ($3, $4)")
@@ -96,20 +107,14 @@ mod tests {
             1, 2, dec!(100.00)
         );
 
-        // 2. ACTION
         let res = verify(&pool, &transaction).await;
-
-        // 3. ASSERT
         assert_eq!(res.unwrap_err(), "Source account has insufficient funds");
     }
 
-    // Replaces test_verify_source_account_not_found_mocked
     #[sqlx::test]
     async fn test_verify_source_account_not_found(pool: PgPool) {
-        // 1. SETUP
         setup_schema(&pool).await;
         
-        // Only insert the target account (id: 2)
         sqlx::query("INSERT INTO accounts (id, balance) VALUES ($1, $2)")
             .bind(2).bind(dec!(200.00))
             .execute(&pool)
@@ -121,17 +126,12 @@ mod tests {
             99, 2, dec!(100.00)
         );
 
-        // 2. ACTION
         let res = verify(&pool, &transaction).await;
-
-        // 3. ASSERT
         assert_eq!(res.unwrap_err(), "Source account not found");
     }
 
-    // Replaces test_successful_transaction_mocked
     #[sqlx::test]
     async fn test_successful_transaction(pool: PgPool) {
-        // 1. SETUP
         setup_schema(&pool).await;
 
         sqlx::query("INSERT INTO accounts (id, balance) VALUES ($1, $2), ($3, $4)")
@@ -146,13 +146,10 @@ mod tests {
             1, 2, dec!(25.00)
         );
 
-        // 2. ACTION
         let res = transact(&pool, transaction).await;
 
-        // 3. ASSERT
         assert!(res.is_ok());
 
-        // Verify the balance updates in the DB
         let new_source_bal: Decimal = sqlx::query_scalar("SELECT balance FROM accounts WHERE id = 1")
             .fetch_one(&pool).await.unwrap();
         let new_target_bal: Decimal = sqlx::query_scalar("SELECT balance FROM accounts WHERE id = 2")
