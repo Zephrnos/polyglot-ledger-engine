@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 
 type AccountId = i32;
 
+#[derive(Clone)]
 pub struct Transaction {
     id: Uuid,
     date: DateTime<Utc>,

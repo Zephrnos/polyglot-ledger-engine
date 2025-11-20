@@ -4,20 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = { version = "0.4.38", features = ["serde"] } # Added serde feature
-clap = { version = "4.5.11", features = ["derive"] }
-rust_decimal = "1.35.0"
-rust_decimal_macros = "1.35.0"
-sqlx = { version = "0.8.6", features = [
-    "runtime-tokio", # Specify the async runtime
-    "postgres",      # Specify your database driver
-    "rust_decimal",  # Add support for the Decimal type
-    "macros"         # Needed for query!, query_as!, and #[sqlx::test]
-] }
-tokio = { version = "1.38.0", features = ["full"] } # "full" enables all features
-uuid = { version = "1.10.0", features = ["v4", "serde"] } # Added common features
+chrono = { version = "0.4.42", features = ["serde"] }
+clap = { version = "4.5.52", features = ["derive"] }
+rust_decimal = "1.39.0"
+rust_decimal_macros = "1.39.0"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "rust_decimal", "macros"] }
+tokio = { version = "1.48.0", features = ["full"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
-# sqlx-macros is deprecated; the 'macros' feature in sqlx replaces it.
-# We just need rust_decimal_macros for the dec! macro in tests.
-rust_decimal_macros = "1.35.0"
+rust_decimal_macros = "1.39.0"
