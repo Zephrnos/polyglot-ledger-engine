@@ -5,6 +5,7 @@ use lapin::{
     types::FieldTable,
     Connection, ConnectionProperties,
 };
+use redis::AsyncCommands; // For updating status
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
@@ -12,17 +13,14 @@ use std::error::Error;
 use uuid::Uuid;
 use chrono::Utc;
 
-mod core;
+mod core; 
 mod models;
-// Import your existing logic
+
 use crate::models::transaction::Transaction;
 use crate::core::worker::transact;
 
-// --- DTO: Matches the JSON sent by Go ---
 #[derive(Debug, Deserialize)]
 struct TransferRequestDto {
-    // Go sends: "idempotency_key", "source_id", etc.
-    // Rust defaults to snake_case, so these match automatically.
     idempotency_key: String,
     source_id: i32,
     target_id: i32,
@@ -35,43 +33,54 @@ struct Args {
     #[arg(short, long, default_value = "amqp://guest:guest@localhost:5672/%2f")]
     amqp_addr: String,
 
-    #[arg(short, long, default_value = "postgres://user:password@localhost/db_name")]
+    #[arg(short, long, default_value = "postgres://postgres:password@localhost:5432/postgres")]
     db_url: String,
+
+    #[arg(long, default_value = "redis://localhost:6379/")]
+    redis_url: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    // 1. Connect to Database
+    println!("🚀 Worker Starting...");
+
+    // 1. Connect to Postgres
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&args.db_url)
         .await?;
     println!("✅ Connected to Postgres");
 
-    // 2. Connect to RabbitMQ
+    // 2. Connect to Redis
+    let redis_client = redis::Client::open(args.redis_url.clone())?;
+    // We use multiplexed connection which is standard for redis-rs 0.24+
+    let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;
+    println!("✅ Connected to Redis at {}", args.redis_url);
+
+    // 3. Connect to RabbitMQ
     let conn = Connection::connect(&args.amqp_addr, ConnectionProperties::default()).await?;
     let channel = conn.create_channel().await?;
     println!("✅ Connected to RabbitMQ");
 
-    // 3. Declare Queue (Must match Go configuration)
+    // 4. Declare Queue
     let _queue = channel
         .queue_declare(
-            "transactions", // Same name as in Go
+            "transactions",
             QueueDeclareOptions {
-                durable: true, // Matches Go's "DurableQueueConfig"
+                durable: true,
                 ..QueueDeclareOptions::default()
             },
             FieldTable::default(),
         )
         .await?;
 
-    // 4. Create Consumer
+    // 5. Create Consumer
     let mut consumer = channel
         .basic_consume(
             "transactions",
-            "rust_worker_1", // Consumer tag
+            "rust_worker_debug", // Specific tag for this worker
             BasicConsumeOptions::default(),
             FieldTable::default(),
         )
@@ -79,50 +88,54 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("🎧 Waiting for transactions...");
 
-    // 5. Processing Loop
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
-            // A. Parse JSON
-            // We use serde_json to convert bytes -> Rust Struct
             let req: TransferRequestDto = match serde_json::from_slice(&delivery.data) {
                 Ok(data) => data,
                 Err(e) => {
                     eprintln!("❌ Malformed JSON: {}", e);
-                    // Nack without requeue (poison message)
                     delivery.nack(BasicNackOptions { requeue: false, ..Default::default() }).await?;
                     continue;
                 }
             };
 
-            println!("📥 Received Job: Transfer {} from {} to {}", req.amount, req.source_id, req.target_id);
+            println!("---------------------------------------------------");
+            println!("📥 Processing Job [{}]", req.idempotency_key);
 
-            // B. Convert DTO to Domain Model
-            // Your Transaction::new takes a UUID. Since Go sent a string key, 
-            // we generate a new internal UUID or parse the key if it's a UUID.
-            // For now, we generate a new tracking ID for the ledger.
             let transaction = Transaction::new(
-                Uuid::new_v4(), 
+                Uuid::new_v4(),
                 Utc::now(),
-                req.source_id, 
-                req.target_id, 
+                req.source_id,
+                req.target_id,
                 req.amount
             );
 
-            // C. Execute Logic (The "Rust Core" box in diagram)
+            let redis_key = format!("status:{}", req.idempotency_key);
+            
             match transact(&pool, transaction).await {
                 Ok(_) => {
-                    // --- DIAGRAM STEP: Acknowledge Message ---
-                    println!("✅ Transaction Success!");
+                    println!("💰 Database Transaction Committed.");
+                    
+                    println!("📝 Attempting to write 'success' to Redis key: {}", redis_key);
+                    
+                    // Explicitly handling Redis errors (No more silent failures)
+                    match redis_conn.set::<_, _, ()>(&redis_key, "success").await {
+                        Ok(_) => println!("✅ Redis Update Successful"),
+                        Err(e) => println!("❌ REDIS WRITE FAILED: {}", e),
+                    }
+                    
                     delivery.ack(BasicAckOptions::default()).await?;
                 }
                 Err(e) => {
-                    // --- DIAGRAM STEP: Failure Handling ---
-                    eprintln!("⚠️ Transaction Failed: {}", e);
+                    eprintln!("⚠️ Transaction Logic Failed: {}", e);
                     
-                    // Note: In a real system, you might want to "Publish Failure Event" here 
-                    // as per the diagram. For now, we just Log and Nack.
-                    // requeue: false -> Send to Dead Letter Queue (if configured) or discard.
-                    delivery.nack(BasicNackOptions { requeue: false, ..Default::default() }).await?;
+                    println!("📝 Writing failure reason to Redis...");
+                    match redis_conn.set::<_, _, ()>(&redis_key, format!("failed: {}", e)).await {
+                        Ok(_) => println!("✅ Redis Update Successful"),
+                        Err(e) => println!("❌ REDIS WRITE FAILED: {}", e),
+                    }
+                    
+                    delivery.ack(BasicAckOptions::default()).await?;
                 }
             }
         }

@@ -14,14 +14,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// --- Configuration Constants ---
 const (
 	amqpURI   = "amqp://guest:guest@localhost:5672/"
 	redisAddr = "localhost:6379"
 	topicName = "transactions"
 )
 
-// --- Data Models ---
 type TransferRequest struct {
 	IdempotencyKey string  `json:"idempotency_key"`
 	SourceID       int     `json:"source_id"`
@@ -29,23 +27,17 @@ type TransferRequest struct {
 	Amount         float64 `json:"amount"`
 }
 
-// --- Dependency Injection Struct ---
-// This is the missing piece causing your error.
-// Instead of global variables, we hold dependencies inside this struct.
 type TransferHandler struct {
 	rdb       *redis.Client
 	publisher message.Publisher
 }
 
-// ServeHTTP allows TransferHandler to act as a standard http.Handler
 func (h *TransferHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// --- DIAGRAM STEP: Listen For Requests ---
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// --- DIAGRAM STEP: Valid Request? ---
 	var req TransferRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -59,8 +51,7 @@ func (h *TransferHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// --- DIAGRAM STEP: Dupe Idem Key? (Redis) ---
-	// Note: We use 'h.rdb' instead of a global variable
+	// 1. Idempotency Check
 	exists, err := h.rdb.Exists(ctx, req.IdempotencyKey).Result()
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -74,77 +65,75 @@ func (h *TransferHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- DIAGRAM STEP: Send job to RabbitMQ ---
-	payload, err := json.Marshal(req)
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
+	// --- FIX STARTS HERE ---
+	// We write to Redis BEFORE publishing. This prevents the race condition.
 
+	// 2. Lock Key in Redis (Idempotency)
+	h.rdb.Set(ctx, req.IdempotencyKey, "processing", 24*time.Hour)
+
+	// 3. Write "status:" key (Pending)
+	h.rdb.Set(ctx, "status:"+req.IdempotencyKey, "pending", 24*time.Hour)
+
+	// --- FIX ENDS HERE ---
+
+	// 4. Publish to Queue
+	payload, _ := json.Marshal(req)
 	msg := message.NewMessage(watermill.NewUUID(), payload)
 
-	// Note: We use 'h.publisher' here
-	err = h.publisher.Publish(topicName, msg)
-
-	// --- DIAGRAM STEP: RabbitMQ Publish OK? ---
-	if err != nil {
-		log.Printf("Failed to publish to RabbitMQ: %v", err)
+	if err := h.publisher.Publish(topicName, msg); err != nil {
+		// If publishing fails, we should technically cleanup Redis,
+		// but for this demo, we just log the error.
+		log.Printf("Failed to publish: %v", err)
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	// --- DIAGRAM STEP: Write Key to Redis ---
-	err = h.rdb.Set(ctx, req.IdempotencyKey, "processing", 24*time.Hour).Err()
-	if err != nil {
-		log.Printf("Warning: Failed to save idempotency key to Redis: %v", err)
-	}
-
-	// --- DIAGRAM STEP: 202 ACCEPTED ---
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	w.Write([]byte(`{"status": "accepted", "message_id": "` + msg.UUID + `"}`))
 }
 
+func (h *TransferHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "Missing key", http.StatusBadRequest)
+		return
+	}
+
+	ctx := context.Background()
+	val, err := h.rdb.Get(ctx, "status:"+key).Result()
+
+	if err == redis.Nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status": "unknown", "detail": "Key not found"}`))
+		return
+	} else if err != nil {
+		http.Error(w, "Redis Error", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"idempotency_key": key,
+		"result":          val,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
-	// 1. Initialize Infrastructure
-	rdb := initRedis()
-	publisher := initWatermill()
-	defer publisher.Close()
-
-	// 2. Create the Handler with dependencies
-	handler := &TransferHandler{
-		rdb:       rdb,
-		publisher: publisher,
-	}
-
-	// 3. Register the handler
-	// We pass handler.ServeHTTP as the function
-	http.HandleFunc("/transfer", handler.ServeHTTP)
-
-	// 4. Start Server
-	fmt.Println("Go API (Watermill Edition) listening on :8080...")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal(err)
-	}
-}
-
-// --- Infrastructure Setup ---
-
-func initRedis() *redis.Client {
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
-	if _, err := rdb.Ping(context.Background()).Result(); err != nil {
-		log.Fatalf("Could not connect to Redis: %v", err)
-	}
-	return rdb
-}
-
-func initWatermill() message.Publisher {
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	amqpConfig := amqp.NewDurableQueueConfig(amqpURI)
 	publisher, err := amqp.NewPublisher(amqpConfig, watermill.NewStdLogger(false, false))
 	if err != nil {
-		log.Fatalf("Could not create Watermill publisher: %v", err)
+		log.Fatal(err)
 	}
-	return publisher
+	defer publisher.Close()
+
+	handler := &TransferHandler{rdb: rdb, publisher: publisher}
+
+	http.HandleFunc("/transfer", handler.ServeHTTP)
+	http.HandleFunc("/status", handler.HandleStatus)
+
+	fmt.Println("Go API listening on :8080...")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }

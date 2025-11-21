@@ -8,7 +8,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.52", features = ["derive"] }
 futures-lite = "2.6.1"
 lapin = "3.7.2"
-redis = "0.32.7"
+redis = { version = "0.32", features = ["aio", "tokio-comp"] }
 rust_decimal = "1.39.0"
 rust_decimal_macros = "1.39.0"
 serde = { version = "1.0", features = ["derive"] }

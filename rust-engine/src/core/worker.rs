@@ -1,9 +1,8 @@
 use crate::models::transaction::Transaction;
 use rust_decimal::Decimal;
-use sqlx::{PgPool, Postgres}; // Added Postgres for type definition
+use sqlx::{PgPool, Postgres}; 
 use tokio::join;
 
-// --- [1-4] Your functions (No changes needed here) ---
 async fn get_account_balance(pool: &PgPool, account_id: i32) -> Result<Decimal, sqlx::Error> {
     let balance: Decimal = sqlx::query_scalar::<_, Decimal>("SELECT balance FROM accounts WHERE id = $1")
         .bind(account_id)
@@ -39,9 +38,8 @@ pub async fn verify(pool: &PgPool, transaction: &Transaction) -> Result<(), Stri
     }
 }
 
-// CHANGED: Now accepts a mutable reference to a Transaction instead of the Pool
+// Accepts &mut Transaction for atomicity
 async fn push_transaction(tx: &mut sqlx::Transaction<'_, Postgres>, transaction: &Transaction) -> Result<(), sqlx::Error> {
-    // We use `&mut **tx` to access the underlying executor
     sqlx::query("UPDATE accounts SET balance = balance - $1 WHERE id = $2")
         .bind(transaction.value())
         .bind(transaction.source())
@@ -58,17 +56,16 @@ async fn push_transaction(tx: &mut sqlx::Transaction<'_, Postgres>, transaction:
 }
 
 pub async fn transact(pool: &PgPool, transaction: Transaction) -> Result<(), String> {
-    // 1. Verify first (Read Phase)
+    // 1. Verify (Read Phase)
     verify(pool, &transaction).await?;
 
-    // 2. Start the Transaction (matches "Commit Transaction" start in diagram)
+    // 2. Start Atomic Transaction
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
     // 3. Attempt Updates
-    // If this function fails, the transaction `tx` is dropped and automatically rolls back.
     push_transaction(&mut tx, &transaction).await.map_err(|e| e.to_string())?;
 
-    // 4. Commit (matches "Transaction Commit Success" in diagram)
+    // 4. Commit
     tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(())
