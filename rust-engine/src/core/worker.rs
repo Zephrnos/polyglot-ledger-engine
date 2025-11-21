@@ -76,10 +76,8 @@ pub async fn transact(pool: &PgPool, transaction: Transaction) -> Result<(), Str
 mod tests {
     use super::*;
     use crate::models::transaction::Transaction;
-    use chrono::Utc;
     use rust_decimal_macros::dec;
     use sqlx::PgPool;
-    use uuid::Uuid;
 
     async fn setup_schema(pool: &PgPool) {
         sqlx::query("CREATE TABLE IF NOT EXISTS accounts (id INT PRIMARY KEY, balance DECIMAL)")
@@ -100,7 +98,6 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::new(
-            Uuid::new_v4(), Utc::now(),
             1, 2, dec!(100.00)
         );
 
@@ -119,8 +116,7 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::new(
-            Uuid::new_v4(), Utc::now(),
-            99, 2, dec!(100.00)
+             99, 2, dec!(100.00)
         );
 
         let res = verify(&pool, &transaction).await;
@@ -139,7 +135,6 @@ mod tests {
             .unwrap();
         
         let transaction = Transaction::new(
-            Uuid::new_v4(), Utc::now(),
             1, 2, dec!(25.00)
         );
 

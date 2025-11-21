@@ -5,13 +5,11 @@ use lapin::{
     types::FieldTable,
     Connection, ConnectionProperties,
 };
-use redis::AsyncCommands; // For updating status
+use redis::AsyncCommands;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use std::error::Error;
-use uuid::Uuid;
-use chrono::Utc;
 
 mod core; 
 mod models;
@@ -55,7 +53,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 2. Connect to Redis
     let redis_client = redis::Client::open(args.redis_url.clone())?;
-    // We use multiplexed connection which is standard for redis-rs 0.24+
     let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;
     println!("✅ Connected to Redis at {}", args.redis_url);
 
@@ -103,8 +100,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("📥 Processing Job [{}]", req.idempotency_key);
 
             let transaction = Transaction::new(
-                Uuid::new_v4(),
-                Utc::now(),
                 req.source_id,
                 req.target_id,
                 req.amount
@@ -118,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     
                     println!("📝 Attempting to write 'success' to Redis key: {}", redis_key);
                     
-                    // Explicitly handling Redis errors (No more silent failures)
+                    // Explicitly handling Redis errors
                     match redis_conn.set::<_, _, ()>(&redis_key, "success").await {
                         Ok(_) => println!("✅ Redis Update Successful"),
                         Err(e) => println!("❌ REDIS WRITE FAILED: {}", e),

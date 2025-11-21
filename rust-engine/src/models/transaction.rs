@@ -1,14 +1,9 @@
 use rust_decimal::Decimal;
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 type AccountId = i32;
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Transaction {
-    id: Uuid,
-    date: DateTime<Utc>,
     source: AccountId,
     target: AccountId,
     value: Decimal
@@ -16,24 +11,12 @@ pub struct Transaction {
 
 impl Transaction {
 
-    pub fn new(id: Uuid, date: DateTime<Utc>, source: AccountId, target: AccountId, value: Decimal) -> Self {
+    pub fn new(source: AccountId, target: AccountId, value: Decimal) -> Self {
         Transaction {
-            id,
-            date,
             source,
             target,
             value
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-    
-    #[allow(dead_code)]
-    pub fn date(&self) -> DateTime<Utc> {
-        self.date
     }
 
     pub fn source(&self) -> AccountId {
