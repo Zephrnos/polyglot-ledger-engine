@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL (The Ledger Database)
+  postgres:
+    image: postgres:15-alpine
+    container_name: ledger_db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. RabbitMQ (The Message Broker)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ledger_mq
+    ports:
+      - "5672:5672"   # Main communication port
+      - "15672:15672" # The Management Dashboard (Browser)
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  # 3. Redis (The Idempotency Cache for Go)
+  redis:
+    image: redis:7-alpine
+    container_name: ledger_redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
