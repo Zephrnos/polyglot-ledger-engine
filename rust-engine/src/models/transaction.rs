@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 type AccountId = i32;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Transaction {
     id: Uuid,
     date: DateTime<Utc>,
@@ -25,10 +26,12 @@ impl Transaction {
         }
     }
 
+    #[allow(dead_code)]
     pub fn id(&self) -> Uuid {
         self.id
     }
-
+    
+    #[allow(dead_code)]
     pub fn date(&self) -> DateTime<Utc> {
         self.date
     }
